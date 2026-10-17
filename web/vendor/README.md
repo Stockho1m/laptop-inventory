@@ -13,6 +13,16 @@
 клиента и появится лишняя зависимость от чужого хостинга.
 
 Обновление: скачать файл по ссылке выше с нужной версией, заменить
-`zxing.min.js` и проверить сканирование на телефоне. Используется только
-глобальный объект `ZXing` (`BrowserMultiFormatReader`, `DecodeHintType`,
-`BarcodeFormat`) — при смене мажорной версии проверь, что эти имена на месте.
+`zxing.min.js` и проверить сканирование на телефоне, обязательно на iPhone:
+там нет системного `BarcodeDetector`, и ZXing — единственный декодер.
+
+Из глобального объекта `ZXing` используются `MultiFormatReader`,
+`HTMLCanvasElementLuminanceSource`, `BinaryBitmap`, `HybridBinarizer`,
+`DecodeHintType`, `BarcodeFormat` и исключения `NotFoundException`,
+`ChecksumException`, `FormatException`. При смене мажорной версии проверь,
+что эти имена на месте.
+
+Готовый `BrowserMultiFormatReader.decodeFromStream` намеренно не используется:
+на iOS он создаёт холст 0×0, если видео начало играть раньше, чем сообщило свой
+размер, и молча останавливается на первой же такой ошибке. Кадры рисует и
+обрезает по рамке сам `web/app.js` (функция `runZxingLoop`).

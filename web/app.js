@@ -900,7 +900,7 @@
       .catch(function () { /* не критично: сканируем как есть */ });
   }
 
-  function describeScanner(stream, decoderName) {
+  function describeScanner(stream, decoderName, quiet) {
     var settings = trackSettings(stream);
     // Длинная сторона: в портретной ориентации width — это короткая сторона,
     // и сравнивать с порогом нужно именно максимум.
@@ -911,7 +911,7 @@
 
     el('scan-info').textContent = 'Камера ' + size + ' · сканер: ' + decoderName;
 
-    if (longest && longest < 1280) {
+    if (!quiet && longest && longest < 1280) {
       scanStatus('Камера даёт мало пикселей — штрих-код может не прочитаться. ' +
         'Поднеси ближе или введи данные вручную.');
     }
@@ -942,11 +942,23 @@
       .catch(function () { return null; });
   }
 
+  function prepareVideo(video) {
+    // iOS проигрывает поток камеры только беззвучно и встроенно, иначе
+    // play() отклоняется или видео уходит в полноэкранный плеер.
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute('muted', '');
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.setAttribute('autoplay', '');
+  }
+
   function attachStream(video, stream) {
+    prepareVideo(video);
     video.srcObject = stream;
     var played = video.play();
     return (played && typeof played.then === 'function')
-      ? played.catch(function () { /* play() могли прервать — кадры всё равно идут */ })
+      ? played.catch(function () { /* не дали запустить — цикл попросит нажать на видео */ })
       : Promise.resolve();
   }
 
@@ -974,33 +986,166 @@
     tick();
   }
 
-  function startZxing(stream, video) {
-    scanStatus('Загружаю сканер…');
-    return loadZxing().then(function (ZXing) {
-      if (state.screen !== 'scan') return false;
+  // --- ZXing: свой цикл распознавания ----------------------------------------
+  //
+  // Готовый decodeFromStream из ZXing на iPhone не работает:
+  //  - холст под кадр создаётся один раз по videoWidth первого кадра, а iOS
+  //    успевает начать воспроизведение до того, как сообщит размер, — холст
+  //    получается 0×0 и getImageData бросает исключение;
+  //  - любое исключение, кроме «код не найден», молча останавливает цикл;
+  //  - если iOS отклонил play(), ZXing вечно ждёт события playing.
+  // Поэтому кадры рисуем и разбираем сами, а ZXing используем только как
+  // декодер одного изображения.
 
-      var reader = new ZXing.BrowserMultiFormatReader(buildHints(ZXing), 200);
+  var ZXING_TICK_MS = 120;
+  // Зона рамки — в исходном разрешении (до 1280 px): тонким полосам Code 128
+  // нужны пиксели. Полный кадр — уменьшенным: QR крупный, а так быстрее.
+  var CROP_MAX_SIDE = 1280;
+  var FULL_MAX_SIDE = 960;
+  // Сколько ждать, пока видео пойдёт само, прежде чем просить нажать на него.
+  var PLAY_GRACE_MS = 1500;
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  // Прямоугольник рамки-прицела в координатах кадра камеры. Видео показано с
+  // object-fit: cover — масштабировано и обрезано по центру, это учитываем.
+  function frameRegion(video) {
+    var vw = video.videoWidth;
+    var vh = video.videoHeight;
+    var box = video.getBoundingClientRect();
+    var frame = document.querySelector('.scan-frame');
+    if (!frame || !box.width || !box.height) return null;
+    var rect = frame.getBoundingClientRect();
+
+    var scale = Math.max(box.width / vw, box.height / vh);
+    var offsetX = (box.width - vw * scale) / 2;
+    var offsetY = (box.height - vh * scale) / 2;
+    // Запас вокруг рамки: код редко попадает в неё точно.
+    var marginX = rect.width * 0.1;
+    var marginY = rect.height * 0.4;
+
+    var left = clamp((rect.left - box.left - marginX - offsetX) / scale, 0, vw);
+    var top = clamp((rect.top - box.top - marginY - offsetY) / scale, 0, vh);
+    var right = clamp((rect.right - box.left + marginX - offsetX) / scale, 0, vw);
+    var bottom = clamp((rect.bottom - box.top + marginY - offsetY) / scale, 0, vh);
+    if (right - left < 32 || bottom - top < 32) return null;
+    return { sx: left, sy: top, sw: right - left, sh: bottom - top };
+  }
+
+  function drawFrame(canvas, context, video, region, maxSide) {
+    var sx = 0;
+    var sy = 0;
+    var sw = video.videoWidth;
+    var sh = video.videoHeight;
+    if (region) {
+      sx = region.sx;
+      sy = region.sy;
+      sw = region.sw;
+      sh = region.sh;
+    }
+    var scale = Math.min(1, maxSide / Math.max(sw, sh));
+    var width = Math.max(1, Math.round(sw * scale));
+    var height = Math.max(1, Math.round(sh * scale));
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    context.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+  }
+
+  function decodeCanvas(ZXing, reader, canvas) {
+    var source = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+    var bitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));
+    return reader.decodeWithState(bitmap);
+  }
+
+  // «Код в кадре не найден» — штатный исход для большинства кадров.
+  function isMissError(ZXing, error) {
+    return error instanceof ZXing.NotFoundException ||
+      error instanceof ZXing.ChecksumException ||
+      error instanceof ZXing.FormatException;
+  }
+
+  function runZxingLoop(ZXing, reader, video, stream) {
+    var canvas = document.createElement('canvas');
+    var context = null;
+    try {
+      context = canvas.getContext('2d', { willReadFrequently: true });
+    } catch (e) { context = null; }
+    context = context || canvas.getContext('2d');
+
+    var startedAt = Date.now();
+    var frames = 0;
+    var askedToTap = false;
+    var reportedError = false;
+
+    function step() {
+      state.scanTimer = null;
+      if (state.screen !== 'scan' || !state.stream) return;
+
+      var ready = !video.paused && video.readyState >= 2 && video.videoWidth > 0;
+      if (!ready) {
+        if (!askedToTap && Date.now() - startedAt > PLAY_GRACE_MS) {
+          askedToTap = true;
+          scanStatus('Камера не включилась сама — нажми на окно камеры.');
+        }
+        state.scanTimer = window.setTimeout(step, ZXING_TICK_MS);
+        return;
+      }
+      if (askedToTap) {
+        askedToTap = false;
+        scanStatus(null);
+      }
+
+      // Два кадра из трёх — зона рамки (штрих-коды), третий — весь кадр,
+      // чтобы QR читался, даже если его держат не в рамке.
+      var full = frames % 3 === 2;
+      frames += 1;
+      try {
+        drawFrame(canvas, context, video, full ? null : frameRegion(video),
+          full ? FULL_MAX_SIDE : CROP_MAX_SIDE);
+        var result = decodeCanvas(ZXing, reader, canvas);
+        stopScanner();
+        handleScanned(result.getText(), codeKind(ZXing, result));
+        return;
+      } catch (error) {
+        if (!isMissError(ZXing, error) && !reportedError) {
+          // Не останавливаемся: следующий кадр может пройти. Причину — в консоль.
+          reportedError = true;
+          if (window.console) window.console.warn('Ошибка разбора кадра', error);
+        }
+      }
+
+      if (frames % 10 === 0) describeScanner(stream, 'ZXing · кадров: ' + frames, true);
+      state.scanTimer = window.setTimeout(step, ZXING_TICK_MS);
+    }
+    step();
+  }
+
+  function startZxing(stream, video) {
+    if (!window.ZXing) scanStatus('Загружаю сканер…');
+    return loadZxing().then(function (ZXing) {
+      if (state.screen !== 'scan' || !state.stream) return false;
+
+      var reader = new ZXing.MultiFormatReader();
+      reader.setHints(buildHints(ZXing));
       state.reader = reader;
       scanStatus(null); // убрать «Загружаю сканер…»
       describeScanner(stream, 'ZXing');
-
-      return reader.decodeFromStream(stream, video, function (result) {
-        // Ошибки отдельных кадров («код не найден») приходят сюда постоянно,
-        // поэтому реагируем только на успешный результат.
-        if (!result || state.screen !== 'scan') return;
-        var kind = codeKind(ZXing, result);
-        stopScanner();
-        handleScanned(result.getText(), kind);
-      }).then(function () { return true; });
+      runZxingLoop(ZXing, reader, video, stream);
+      return true;
     });
   }
 
   function startDecoding(stream) {
     var video = el('scan-video');
-    return nativeDetector().then(function (detector) {
-      if (!detector) return startZxing(stream, video);
-      return attachStream(video, stream).then(function () {
+    // Видео запускаем сразу: на iOS чем дальше от нажатия кнопки, тем выше
+    // шанс, что play() отклонят.
+    return attachStream(video, stream).then(function () {
+      if (state.screen !== 'scan') return false;
+      return nativeDetector().then(function (detector) {
         if (state.screen !== 'scan') return false;
+        if (!detector) return startZxing(stream, video);
         describeScanner(stream, 'системный');
         runNativeLoop(detector, video);
         return true;
@@ -1073,6 +1218,11 @@
     setMainButton(null, null);
     setBackButton(goBack);
     showScreen('scan');
+
+    if (typeof window.BarcodeDetector !== 'function') {
+      // Системного детектора нет (iPhone) — понадобится ZXing, грузим заранее.
+      loadZxing().catch(function () { /* ошибку покажет startZxing */ });
+    }
 
     navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS)
       .then(function (stream) {
@@ -1158,6 +1308,13 @@
     el('btn-scan-manual').addEventListener('click', function () {
       openForm({ mode: 'create', values: {} });
     });
+    el('scan-video').parentNode.addEventListener('click', function () {
+      var video = el('scan-video');
+      if (!video.srcObject || !video.paused) return;
+      var played = video.play();
+      if (played && typeof played.catch === 'function') played.catch(function () {});
+    });
+
     el('btn-scan-native').addEventListener('click', function () {
       stopScanner();
       startNativeQrScan();
