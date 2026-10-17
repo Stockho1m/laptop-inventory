@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Инвентаризация ноутбуков</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <main id="app">
+    <!-- Загрузка -->
+    <section id="screen-loading" class="screen screen-center">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="muted">Проверяем доступ…</p>
+    </section>
+
+    <!-- Нет доступа -->
+    <section id="screen-denied" class="screen screen-center" hidden>
+      <div class="hero-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="36" height="36"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      </div>
+      <h1>Нет доступа</h1>
+      <p class="muted">Передай администратору свой Telegram ID, чтобы он выдал доступ.</p>
+      <p class="id-box" id="denied-id">—</p>
+      <button type="button" class="btn secondary" id="btn-copy-id">Скопировать ID</button>
+      <p class="muted small" id="denied-hint"></p>
+    </section>
+
+    <!-- Ошибка -->
+    <section id="screen-error" class="screen screen-center" hidden>
+      <div class="hero-icon hero-icon--danger" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="36" height="36"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+      </div>
+      <h1>Ошибка</h1>
+      <p id="error-text" class="muted"></p>
+      <button type="button" class="btn secondary" id="btn-retry">Повторить</button>
+    </section>
+
+    <!-- Список -->
+    <section id="screen-list" class="screen" hidden>
+      <header class="page-head">
+        <div>
+          <h1 class="page-title">Ноутбуки</h1>
+          <p class="page-sub" id="list-summary"></p>
+        </div>
+        <div class="avatar" id="me-avatar" hidden></div>
+      </header>
+      <div class="dist-bar" id="dist-bar" hidden></div>
+
+      <div class="quick-actions">
+        <button type="button" class="action action--primary" id="btn-scan">
+          <span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M7 12h10"/></svg>
+          </span>
+          <span class="action-text"><b>Сканировать</b><small>QR, штрихкод</small></span>
+        </button>
+        <button type="button" class="action" id="btn-manual">
+          <span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 5v14M5 12h14"/></svg>
+          </span>
+          <span class="action-text"><b>Вручную</b><small>Если кода нет</small></span>
+        </button>
+      </div>
+      <p class="notice" id="scan-notice" hidden></p>
+
+      <div class="toolbar">
+        <div class="search">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" id="search" autocomplete="off" enterkeyhint="search"
+                 placeholder="Серийник, сотрудник, модель…" aria-label="Поиск">
+          <button type="button" class="search-clear" id="search-clear" aria-label="Очистить поиск" hidden>
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div class="segmented" id="search-by" role="radiogroup" aria-label="Где искать">
+          <button type="button" data-by="all" class="active" role="radio" aria-checked="true">Везде</button>
+          <button type="button" data-by="serial" role="radio" aria-checked="false">Серийник</button>
+          <button type="button" data-by="employee" role="radio" aria-checked="false">Сотрудник</button>
+        </div>
+        <div class="chips" id="status-chips" role="radiogroup" aria-label="Статус"></div>
+      </div>
+
+      <div class="list-head">
+        <span class="muted small" id="list-total"></span>
+        <button type="button" class="sort-btn" id="btn-sort">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>
+          <span id="sort-label">Сначала новые</span>
+        </button>
+      </div>
+      <div id="list" class="list"></div>
+      <button type="button" class="btn secondary more" id="btn-more" hidden>Показать ещё</button>
+    </section>
+
+    <!-- Сканер: QR и штрих-коды через камеру -->
+    <section id="screen-scan" class="screen" hidden>
+      <h1 class="page-title page-title--sm">Наведи камеру</h1>
+      <p class="muted small">
+        Подойдёт и QR-код, и штрих-код с серийным номером.
+        Держи 15–25 см и дождись, пока картинка станет резкой.
+      </p>
+      <div class="scanner">
+        <video id="scan-video" playsinline muted></video>
+        <div class="scan-frame"><div class="scan-line"></div></div>
+      </div>
+      <p class="muted small center" id="scan-info"></p>
+      <p class="notice" id="scan-status" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn secondary" id="btn-scan-native" hidden>
+          Сканировать QR средствами Telegram
+        </button>
+        <button type="button" class="btn secondary" id="btn-scan-manual">Ввести вручную</button>
+        <button type="button" class="btn secondary fallback" id="btn-scan-cancel">Отмена</button>
+      </div>
+    </section>
+
+    <!-- Форма добавления / редактирования -->
+    <section id="screen-form" class="screen" hidden>
+      <h1 class="page-title page-title--sm" id="form-title">Новый ноутбук</h1>
+      <p class="notice" id="form-notice" hidden></p>
+      <form id="laptop-form" novalidate>
+        <h2 class="section-title">Устройство</h2>
+        <div class="section">
+          <label class="field">
+            <span>Серийный номер <em>*</em></span>
+            <input type="text" name="serial_number" class="input mono" maxlength="100"
+                   autocomplete="off" placeholder="Обязательно">
+          </label>
+          <label class="field">
+            <span>Производитель</span>
+            <input type="text" name="manufacturer" class="input" maxlength="200"
+                   autocomplete="off" list="manufacturers-list" placeholder="Lenovo, Dell, Apple…">
+            <datalist id="manufacturers-list"></datalist>
+          </label>
+          <label class="field">
+            <span>Модель</span>
+            <input type="text" name="model" class="input" maxlength="200"
+                   autocomplete="off" list="models-list" placeholder="ThinkPad T14…">
+            <datalist id="models-list"></datalist>
+          </label>
+          <label class="field">
+            <span>Инвентарный номер</span>
+            <input type="text" name="inventory_number" class="input" maxlength="200" autocomplete="off">
+          </label>
+        </div>
+
+        <h2 class="section-title">Статус</h2>
+        <div class="section">
+          <div class="status-picker" id="form-status" role="radiogroup" aria-label="Статус"></div>
+        </div>
+
+        <h2 class="section-title">Закрепление</h2>
+        <div class="section">
+          <label class="field">
+            <span>Сотрудник</span>
+            <input type="text" name="assigned_to" class="input" maxlength="200"
+                   autocomplete="off" list="employees-list" placeholder="Фамилия Имя">
+            <datalist id="employees-list"></datalist>
+          </label>
+          <label class="field">
+            <span>Расположение</span>
+            <input type="text" name="location" class="input" maxlength="200"
+                   autocomplete="off" placeholder="Кабинет, склад…">
+          </label>
+        </div>
+
+        <h2 class="section-title">Примечание</h2>
+        <div class="section">
+          <label class="field">
+            <span>Комментарий</span>
+            <textarea name="notes" class="input" rows="3" maxlength="2000"></textarea>
+          </label>
+        </div>
+
+        <div id="qr-raw-box" hidden>
+          <h2 class="section-title">Содержимое кода</h2>
+          <pre class="raw" id="qr-raw-value"></pre>
+        </div>
+        <p class="error" id="form-error" hidden></p>
+        <button type="submit" class="btn primary" id="btn-save-fallback">Сохранить</button>
+      </form>
+    </section>
+
+    <!-- Карточка -->
+    <section id="screen-card" class="screen" hidden>
+      <p class="notice" id="card-notice" hidden></p>
+      <div class="card-hero" id="card-hero">
+        <div class="hero-laptop" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="40" height="40"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg>
+        </div>
+        <h1 id="card-title">Ноутбук</h1>
+        <p class="hero-serial" id="card-serial"></p>
+        <span class="pill pill--lg" id="card-status"></span>
+      </div>
+      <div id="card-fields"></div>
+      <button type="button" class="btn secondary" id="btn-edit-fallback">Редактировать</button>
+    </section>
+  </main>
+
+  <script src="app.js?v=6"></script>
+</body>
+</html>

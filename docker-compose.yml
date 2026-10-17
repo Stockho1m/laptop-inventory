@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    image: laptop-inventory
+    container_name: laptop-inventory
+    restart: unless-stopped
+    # Все секреты только отсюда: скопируй .env.example в .env и заполни.
+    env_file: .env
+    environment:
+      # Путь внутри контейнера, не зависит от содержимого .env
+      DB_PATH: /data/inventory.db
+    # Наружу приложение отдаёт только reverse-proxy (nginx) с этого же хоста.
+    # Чтобы сменить внешний порт, меняй левую часть: "127.0.0.1:9000:8080".
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - inv-data:/data
+
+volumes:
+  inv-data:

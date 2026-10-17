@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": ".venv/Scripts/uvicorn.exe",
+      "runtimeArgs": ["app.main:create_app", "--factory", "--reload", "--port", "8082", "--env-file", ".env.dev"],
+      "port": 8082
+    },
+    {
+      "name": "telegram",
+      "runtimeExecutable": ".venv/Scripts/uvicorn.exe",
+      "runtimeArgs": ["app.main:create_app", "--factory", "--reload", "--port", "8081", "--env-file", ".env"],
+      "port": 8081,
+      "autoPort": false
+    }
+  ]
+}
