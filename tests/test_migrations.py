@@ -36,7 +36,8 @@ def legacy_db(tmp_path) -> Database:
 
 
 def test_barcode_migration_keeps_existing_rows(legacy_db: Database):
-    assert legacy_db.migrate() == ["0002_source_barcode.sql"]
+    # Проверяем конкретную миграцию, не весь список: новые не должны ломать тест.
+    assert "0002_source_barcode.sql" in legacy_db.migrate()
 
     with legacy_db.session() as conn:
         rows = conn.execute("SELECT * FROM laptops").fetchall()
@@ -103,7 +104,8 @@ def test_constraints_and_indexes_survive_rebuild(legacy_db: Database):
 
 
 def test_migrations_are_not_applied_twice(legacy_db: Database):
-    assert legacy_db.migrate() == ["0002_source_barcode.sql"]
+    applied = legacy_db.migrate()
+    assert "0002_source_barcode.sql" in applied
     assert legacy_db.migrate() == []
 
 

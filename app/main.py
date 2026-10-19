@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import api
@@ -94,6 +94,21 @@ def create_app(config: Config | None = None, database: Database | None = None) -
         return {"status": "ok"}
 
     app.include_router(api.router)
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
+    def index() -> FileResponse:
+        """Точка входа отдаётся с обязательной перепроверкой.
+
+        У css и js в ссылках есть ?v=N, а у самой страницы версии нет. Без
+        Cache-Control WebView Telegram держит её в кеше по эвристике и после
+        обновления показывает старую разметку с новым скриптом. no-cache не
+        запрещает кеширование: браузер всё равно спросит сервер и чаще всего
+        получит дешёвый 304 по ETag.
+        """
+        return FileResponse(
+            WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
 
     # Статика монтируется последней: все конкретные маршруты выше имеют приоритет.
     app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

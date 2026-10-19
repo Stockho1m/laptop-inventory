@@ -180,6 +180,35 @@ class MetaOut(BaseModel):
     statuses: list[StatusOut]
 
 
+class AuditEntryOut(BaseModel):
+    id: int
+    actor_tg_id: int
+    actor_name: str | None
+    action: str
+    entity_type: str
+    entity_id: str
+    # {"поле": {"from": старое, "to": новое"}}; для access_* может быть пустым
+    changes: dict[str, Any] | None
+    created_at: str
+
+
+class AuditListOut(BaseModel):
+    items: list[AuditEntryOut]
+    total: int
+
+
+class HolderOut(BaseModel):
+    """Прошлый владелец ноутбука. since=None — начало владения неизвестно."""
+
+    name: str
+    since: str | None
+    until: str
+
+
+class LaptopHistoryOut(AuditListOut):
+    holders: list[HolderOut]
+
+
 class SuggestionsOut(BaseModel):
     """Уже встречавшиеся значения — подсказки в форме, чтобы не печатать заново."""
 

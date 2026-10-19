@@ -1011,6 +1011,80 @@ textarea.input {
   to { top: 86%; }
 }
 
+/* --- журнал действий --- */
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.audit-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--section-bg);
+  color: var(--text);
+  font: inherit;
+}
+
+button.audit-item {
+  cursor: pointer;
+}
+
+.audit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.audit-action {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.audit-date,
+.audit-actor {
+  color: var(--hint);
+  font-size: 13px;
+}
+
+.audit-actor {
+  margin-bottom: 6px;
+}
+
+.audit-changes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+}
+
+.audit-changes li {
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.audit-changes dfn {
+  color: var(--hint);
+  font-style: normal;
+}
+
+.audit-old {
+  color: var(--hint);
+  text-decoration: line-through;
+}
+
+.card-history-title {
+  margin: 18px 4px 8px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .scan-line,
   .spinner {

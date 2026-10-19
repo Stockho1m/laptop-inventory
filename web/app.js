@@ -20,7 +20,9 @@
     items: [],
     total: 0,
     counts: {},
-    listRequest: 0
+    listRequest: 0,
+    isAdmin: false,
+    audit: { items: [], total: 0 }
   };
 
   var PAGE_SIZE = 50;
@@ -61,6 +63,29 @@
       ['qr_raw', 'Содержимое кода', 'stack']
     ]]
   ];
+
+  // Подписи полей в журнале. Формулировки безличные — пол автора нам неизвестен.
+  var ACTION_LABELS = {
+    laptop_create: 'Добавление записи',
+    laptop_update: 'Изменение',
+    access_grant: 'Выдача доступа',
+    access_revoke: 'Отзыв доступа'
+  };
+
+  var FIELD_LABELS = {
+    manufacturer: 'Производитель',
+    model: 'Модель',
+    serial_number: 'Серийный номер',
+    inventory_number: 'Инвентарный номер',
+    status: 'Статус',
+    assigned_to: 'Сотрудник',
+    location: 'Расположение',
+    notes: 'Комментарий',
+    source: 'Источник',
+    name: 'Имя'
+  };
+
+  var AUDIT_PAGE = 50;
 
   var SEARCH_PLACEHOLDERS = {
     all: 'Серийник, сотрудник, модель…',
@@ -219,7 +244,7 @@
   function showScreen(name) {
     // Уходим со сканера — камеру отпускаем в любом случае, каким бы путём ни ушли.
     if (name !== 'scan') stopScanner();
-    ['loading', 'denied', 'error', 'list', 'scan', 'form', 'card'].forEach(function (screen) {
+    ['loading', 'denied', 'error', 'list', 'scan', 'form', 'card', 'audit'].forEach(function (screen) {
       el('screen-' + screen).hidden = (screen !== name);
     });
     state.screen = name;
@@ -406,6 +431,16 @@
     box.appendChild(head);
     box.appendChild(text);
     container.appendChild(box);
+  }
+
+  // Без времени: для периода владения важен день, а не минуты.
+  function formatDay(value) {
+    if (!value) return '';
+    var date = new Date(String(value).replace(' ', 'T') + 'Z');
+    if (isNaN(date.getTime())) return String(value);
+    return date.toLocaleDateString('ru-RU', {
+      day: '2-digit', month: '2-digit', year: 'numeric'
+    });
   }
 
   function renderList() {
@@ -796,11 +831,207 @@
       container.appendChild(list);
     });
 
+    el('card-history').textContent = '';
+
     setBackButton(goBack);
     setMainButton('Редактировать', function () {
       openForm({ mode: 'edit', laptop: laptop, values: laptop });
     });
     showScreen('card');
+    loadCardHistory(laptop.id);
+  }
+
+  // --- журнал действий ----------------------------------------------------
+
+  function statusLabel(code) {
+    var found = null;
+    state.statuses.forEach(function (status) {
+      if (status.value === code) found = status.label;
+    });
+    return found || code;
+  }
+
+  function fieldValueText(field, value) {
+    if (value === null || value === undefined || value === '') return '—';
+    if (field === 'status') return statusLabel(value);
+    if (field === 'source') return SOURCE_LABELS[value] || value;
+    return String(value);
+  }
+
+  // <dfn>Поле</dfn>: старое → новое
+  function changeLine(field, change) {
+    var line = document.createElement('li');
+    var name = document.createElement('dfn');
+    name.textContent = (FIELD_LABELS[field] || field) + ': ';
+    line.appendChild(name);
+
+    var from = change ? change.from : null;
+    var to = change ? change.to : null;
+    if (from !== null && from !== undefined && from !== '') {
+      var old = document.createElement('span');
+      old.className = 'audit-old';
+      old.textContent = fieldValueText(field, from);
+      line.appendChild(old);
+      line.appendChild(document.createTextNode(' → '));
+    }
+    line.appendChild(document.createTextNode(fieldValueText(field, to)));
+    return line;
+  }
+
+  function renderAuditEntry(entry, withTarget) {
+    var isLaptop = entry.entity_type === 'laptop';
+    var clickable = withTarget && isLaptop;
+    var item = document.createElement(clickable ? 'button' : 'div');
+    item.className = 'audit-item';
+    if (clickable) item.type = 'button';
+
+    var head = document.createElement('div');
+    head.className = 'audit-head';
+    var action = document.createElement('span');
+    action.className = 'audit-action';
+    action.textContent = ACTION_LABELS[entry.action] || entry.action;
+    var date = document.createElement('span');
+    date.className = 'audit-date';
+    date.textContent = formatDate(entry.created_at);
+    head.appendChild(action);
+    head.appendChild(date);
+    item.appendChild(head);
+
+    var actor = document.createElement('div');
+    actor.className = 'audit-actor';
+    var who = entry.actor_name ? entry.actor_name + ' · ' : '';
+    actor.textContent = who + 'ID ' + entry.actor_tg_id;
+    item.appendChild(actor);
+
+    var changes = document.createElement('ul');
+    changes.className = 'audit-changes';
+
+    // В общем журнале нужно понимать, к чему относится запись.
+    if (withTarget) {
+      var target = document.createElement('li');
+      var targetName = document.createElement('dfn');
+      targetName.textContent = isLaptop ? 'Ноутбук: ' : 'Пользователь: ';
+      target.appendChild(targetName);
+      target.appendChild(document.createTextNode(
+        isLaptop ? '#' + entry.entity_id : 'ID ' + entry.entity_id
+      ));
+      changes.appendChild(target);
+    }
+
+    Object.keys(entry.changes || {}).forEach(function (field) {
+      changes.appendChild(changeLine(field, entry.changes[field]));
+    });
+
+    if (changes.children.length) item.appendChild(changes);
+
+    if (clickable) {
+      item.addEventListener('click', function () {
+        api('/api/laptops/' + entry.entity_id)
+          .then(function (laptop) { openCard(laptop); })
+          .catch(handleError);
+      });
+    }
+    return item;
+  }
+
+  function sectionTitle(text) {
+    var title = document.createElement('h2');
+    title.className = 'section-title card-history-title';
+    title.textContent = text;
+    return title;
+  }
+
+  // «12.03.2026 — 15.08.2026», либо «до 15.08.2026», если начало неизвестно:
+  // ноутбук сменил владельца раньше, чем появился журнал.
+  function holderPeriod(holder) {
+    var until = formatDay(holder.until);
+    return holder.since ? formatDay(holder.since) + ' — ' + until : 'до ' + until;
+  }
+
+  function renderHolders(box, holders) {
+    if (!holders.length) return;
+    box.appendChild(sectionTitle('Прошлые сотрудники'));
+
+    var list = document.createElement('dl');
+    list.className = 'section';
+    holders.forEach(function (holder) {
+      var row = document.createElement('div');
+      row.className = 'row';
+      var term = document.createElement('dt');
+      term.textContent = holder.name;
+      var definition = document.createElement('dd');
+      definition.textContent = holderPeriod(holder);
+      row.appendChild(term);
+      row.appendChild(definition);
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+  }
+
+  function renderCardHistory(data) {
+    var box = el('card-history');
+    box.textContent = '';
+
+    renderHolders(box, data.holders || []);
+
+    var entries = data.items || [];
+    if (!entries.length) return;
+    box.appendChild(sectionTitle('Кто и что менял'));
+    entries.forEach(function (entry) {
+      box.appendChild(renderAuditEntry(entry, false));
+    });
+  }
+
+  function loadCardHistory(laptopId) {
+    // История — дополнение к карточке: при ошибке просто не показываем её.
+    api('/api/laptops/' + laptopId + '/history')
+      .then(function (data) {
+        if (state.screen === 'card' && state.laptop && state.laptop.id === laptopId) {
+          renderCardHistory(data);
+        }
+      })
+      .catch(function () { el('card-history').textContent = ''; });
+  }
+
+  function renderAudit() {
+    var container = el('audit-list');
+    container.textContent = '';
+
+    if (!state.audit.items.length) {
+      var empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'Пока ничего не происходило.';
+      container.appendChild(empty);
+    } else {
+      state.audit.items.forEach(function (entry) {
+        container.appendChild(renderAuditEntry(entry, true));
+      });
+    }
+    el('btn-audit-more').hidden = state.audit.items.length >= state.audit.total;
+  }
+
+  function loadAudit(append) {
+    var offset = append ? state.audit.items.length : 0;
+    return api('/api/audit?limit=' + AUDIT_PAGE + '&offset=' + offset)
+      .then(function (data) {
+        state.audit.total = data.total;
+        state.audit.items = append
+          ? state.audit.items.concat(data.items)
+          : data.items;
+        renderAudit();
+      })
+      .catch(handleError);
+  }
+
+  function openAudit() {
+    pushHistory();
+    state.audit = { items: [], total: 0 };
+    el('audit-list').textContent = '';
+    el('btn-audit-more').hidden = true;
+    setMainButton(null, null);
+    setBackButton(goBack);
+    showScreen('audit');
+    return loadAudit(false);
   }
 
   // --- сканирование: QR и штрих-коды --------------------------------------
@@ -1304,6 +1535,9 @@
       openForm({ mode: 'create', values: {} });
     });
 
+    el('btn-audit').addEventListener('click', openAudit);
+    el('btn-audit-more').addEventListener('click', function () { loadAudit(true); });
+
     el('btn-scan-cancel').addEventListener('click', goBack);
     el('btn-scan-manual').addEventListener('click', function () {
       openForm({ mode: 'create', values: {} });
@@ -1395,6 +1629,10 @@
     avatar.textContent = initials.toUpperCase() || '?';
     avatar.title = (me && me.name ? me.name : '') + (me && me.is_admin ? ' · администратор' : '');
     avatar.hidden = false;
+
+    // Журнал виден только админу — сервер всё равно отдаст ему 403.
+    state.isAdmin = !!(me && me.is_admin);
+    el('btn-audit').hidden = !state.isAdmin;
   }
 
   function init() {

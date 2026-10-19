@@ -84,10 +84,16 @@
 
       <div class="list-head">
         <span class="muted small" id="list-total"></span>
-        <button type="button" class="sort-btn" id="btn-sort">
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>
-          <span id="sort-label">Сначала новые</span>
-        </button>
+        <div class="head-actions">
+          <button type="button" class="sort-btn" id="btn-audit" hidden>
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+            <span>Журнал</span>
+          </button>
+          <button type="button" class="sort-btn" id="btn-sort">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>
+            <span id="sort-label">Сначала новые</span>
+          </button>
+        </div>
       </div>
       <div id="list" class="list"></div>
       <button type="button" class="btn secondary more" id="btn-more" hidden>Показать ещё</button>
@@ -194,10 +200,23 @@
         <span class="pill pill--lg" id="card-status"></span>
       </div>
       <div id="card-fields"></div>
+      <div id="card-history"></div>
       <button type="button" class="btn secondary" id="btn-edit-fallback">Редактировать</button>
+    </section>
+
+    <!-- Журнал действий, только для админов -->
+    <section id="screen-audit" class="screen" hidden>
+      <h1 class="page-title page-title--sm">Журнал</h1>
+      <p class="muted small">
+        Кто и что менял. Записи только добавляются — исправить или удалить их нельзя.
+      </p>
+      <div id="audit-list" class="list"></div>
+      <button type="button" class="btn secondary more" id="btn-audit-more" hidden>
+        Показать ещё
+      </button>
     </section>
   </main>
 
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

@@ -153,6 +153,17 @@ def test_healthz_is_open(client):
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+def test_index_is_always_revalidated(client):
+    """Ссылки на css/js версионированы, а сама страница — нет.
+
+    Без no-cache WebView Telegram показывает старую разметку после обновления.
+    """
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+    assert "<title>Инвентаризация ноутбуков</title>" in response.text
+
+
 def test_init_data_header_is_not_accepted_from_query_string(client):
     """Единственный источник initData — заголовок, не URL."""
     init_data = build_init_data(user_id=ADMIN_ID)

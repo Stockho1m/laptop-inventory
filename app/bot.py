@@ -16,7 +16,7 @@ from aiogram.types import MenuButtonWebApp, Message, WebAppInfo
 
 from . import repo
 from .config import Config
-from .db import Database
+from .db import Database, transaction
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,13 @@ def _parse_telegram_id(raw: str) -> int:
     return value
 
 
-def adduser_command(config: Config, database: Database, actor_id: int, args: str) -> str:
+def adduser_command(
+    config: Config,
+    database: Database,
+    actor_id: int,
+    args: str,
+    actor_name: str | None = None,
+) -> str:
     if not config.is_admin(actor_id):
         return NOT_ADMIN
 
@@ -46,8 +52,18 @@ def adduser_command(config: Config, database: Database, actor_id: int, args: str
 
     name = parts[1].strip()[:MAX_NAME_LEN] if len(parts) > 1 else None
 
-    with database.session() as conn:
+    with database.session() as conn, transaction(conn):
         added = repo.add_allowed_user(conn, telegram_id, name, actor_id)
+        if added:
+            repo.write_audit(
+                conn,
+                actor_tg_id=actor_id,
+                actor_name=actor_name,
+                action="access_grant",
+                entity_type="user",
+                entity_id=telegram_id,
+                changes={"name": {"from": None, "to": name}} if name else None,
+            )
 
     who = f"{telegram_id} ({name})" if name else str(telegram_id)
     if added:
@@ -56,7 +72,11 @@ def adduser_command(config: Config, database: Database, actor_id: int, args: str
 
 
 def removeuser_command(
-    config: Config, database: Database, actor_id: int, args: str
+    config: Config,
+    database: Database,
+    actor_id: int,
+    args: str,
+    actor_name: str | None = None,
 ) -> str:
     if not config.is_admin(actor_id):
         return NOT_ADMIN
@@ -69,8 +89,17 @@ def removeuser_command(
     except ValueError:
         return f"'{raw.split()[0]}' не похож на Telegram ID."
 
-    with database.session() as conn:
+    with database.session() as conn, transaction(conn):
         removed = repo.remove_allowed_user(conn, telegram_id)
+        if removed:
+            repo.write_audit(
+                conn,
+                actor_tg_id=actor_id,
+                actor_name=actor_name,
+                action="access_revoke",
+                entity_type="user",
+                entity_id=telegram_id,
+            )
 
     if not removed:
         if config.is_admin(telegram_id):
@@ -101,26 +130,38 @@ def users_command(config: Config, database: Database, actor_id: int) -> str:
     return "\n".join(lines)
 
 
+def _actor(message: Message) -> tuple[int, str | None]:
+    """Кто отправил команду. Без from_user (например, пост от канала) — не админ."""
+    if not message.from_user:
+        return 0, None
+    name = (message.from_user.full_name or "").strip()
+    if not name and message.from_user.username:
+        name = f"@{message.from_user.username}"
+    return message.from_user.id, name or None
+
+
 def build_router(config: Config, database: Database) -> Router:
     router = Router(name="access")
 
     @router.message(Command("adduser"))
     async def handle_adduser(message: Message, command: CommandObject) -> None:
-        actor_id = message.from_user.id if message.from_user else 0
+        actor_id, actor_name = _actor(message)
         await message.answer(
-            adduser_command(config, database, actor_id, command.args or "")
+            adduser_command(config, database, actor_id, command.args or "", actor_name)
         )
 
     @router.message(Command("removeuser"))
     async def handle_removeuser(message: Message, command: CommandObject) -> None:
-        actor_id = message.from_user.id if message.from_user else 0
+        actor_id, actor_name = _actor(message)
         await message.answer(
-            removeuser_command(config, database, actor_id, command.args or "")
+            removeuser_command(
+                config, database, actor_id, command.args or "", actor_name
+            )
         )
 
     @router.message(Command("users"))
     async def handle_users(message: Message) -> None:
-        actor_id = message.from_user.id if message.from_user else 0
+        actor_id, _ = _actor(message)
         await message.answer(users_command(config, database, actor_id))
 
     return router

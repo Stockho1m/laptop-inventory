@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from typing import Annotated, Any
@@ -10,10 +11,14 @@ from fastapi import APIRouter, Depends, Path, Query, Request, Response
 
 from . import repo
 from .auth import AuthUser, require_user
+from .db import transaction
 from .errors import ApiError
 from .models import (
     STATUS_LABELS,
+    AuditEntryOut,
+    AuditListOut,
     LaptopCreate,
+    LaptopHistoryOut,
     LaptopListOut,
     LaptopOut,
     LaptopUpdate,
@@ -45,6 +50,16 @@ def to_out(row: sqlite3.Row) -> LaptopOut:
     data: dict[str, Any] = dict(row)
     data["status_label"] = STATUS_LABELS.get(data["status"], data["status"])
     return LaptopOut(**data)
+
+
+def audit_to_out(row: sqlite3.Row) -> AuditEntryOut:
+    data: dict[str, Any] = dict(row)
+    raw = data.get("changes")
+    try:
+        data["changes"] = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        data["changes"] = None
+    return AuditEntryOut(**data)
 
 
 def _duplicate_error(existing: sqlite3.Row) -> ApiError:
@@ -119,7 +134,17 @@ def create_laptop(
         raise _duplicate_error(existing)
 
     try:
-        row = repo.create_laptop(conn, payload.model_dump(), user.telegram_id)
+        with transaction(conn):
+            row = repo.create_laptop(conn, payload.model_dump(), user.telegram_id)
+            repo.write_audit(
+                conn,
+                actor_tg_id=user.telegram_id,
+                actor_name=user.name,
+                action="laptop_create",
+                entity_type="laptop",
+                entity_id=row["id"],
+                changes=repo.diff_fields(None, dict(row)),
+            )
     except repo.DuplicateSerialError:
         # Гонка между проверкой и вставкой — отдаём уже существующую запись.
         existing = repo.get_laptop_by_serial(conn, payload.serial_number)
@@ -141,14 +166,34 @@ def edit_laptop(
 ) -> LaptopOut:
     changes = payload.model_dump(exclude_unset=True)
 
+    before = repo.get_laptop(conn, laptop_id)
+    if before is None:
+        raise ApiError(404, "not_found", "Ноутбук не найден")
+
     serial_number = changes.get("serial_number")
     if serial_number:
         existing = repo.get_laptop_by_serial(conn, serial_number)
         if existing is not None and existing["id"] != laptop_id:
             raise _duplicate_error(existing)
 
+    diff = repo.diff_fields(dict(before), changes)
+    if not diff:
+        # Форму сохранили без правок — не трогаем ни запись, ни журнал,
+        # иначе «Изменён» обновится, а в истории ничего не появится.
+        return to_out(before)
+
     try:
-        row = repo.update_laptop(conn, laptop_id, changes)
+        with transaction(conn):
+            row = repo.update_laptop(conn, laptop_id, changes)
+            repo.write_audit(
+                conn,
+                actor_tg_id=user.telegram_id,
+                actor_name=user.name,
+                action="laptop_update",
+                entity_type="laptop",
+                entity_id=laptop_id,
+                changes=diff,
+            )
     except repo.DuplicateSerialError as exc:
         existing = repo.get_laptop_by_serial(conn, exc.serial_number)
         if existing is None:
@@ -158,6 +203,35 @@ def edit_laptop(
     if row is None:
         raise ApiError(404, "not_found", "Ноутбук не найден")
     return to_out(row)
+
+
+@router.get("/laptops/{laptop_id}/history", response_model=LaptopHistoryOut)
+def get_laptop_history(
+    user: CurrentUser, conn: Conn, laptop_id: Annotated[int, Path(ge=1)]
+) -> LaptopHistoryOut:
+    """История правок и прошлые владельцы — видны всем, у кого есть доступ."""
+    if repo.get_laptop(conn, laptop_id) is None:
+        raise ApiError(404, "not_found", "Ноутбук не найден")
+    rows = repo.laptop_history(conn, laptop_id)
+    return LaptopHistoryOut(
+        items=[audit_to_out(row) for row in rows],
+        total=len(rows),
+        holders=repo.assignment_history(conn, laptop_id),
+    )
+
+
+@router.get("/audit", response_model=AuditListOut)
+def get_audit(
+    user: CurrentUser,
+    conn: Conn,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> AuditListOut:
+    """Общий журнал, включая выдачу и отзыв доступа. Только для админов."""
+    if not user.is_admin:
+        raise ApiError(403, "admin_only", "Журнал доступен только администратору")
+    rows, total = repo.audit_entries(conn, limit, offset)
+    return AuditListOut(items=[audit_to_out(row) for row in rows], total=total)
 
 
 @router.post("/qr/parse", response_model=QrParseOut)

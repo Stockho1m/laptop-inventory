@@ -22,6 +22,22 @@ def search_key(value: object) -> str | None:
     return str(value).casefold().replace("ё", "е")
 
 
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """Явная транзакция: изменение и запись в журнал фиксируются вместе.
+
+    Соединения открыты в режиме autocommit (isolation_level=None), поэтому без
+    этого обёртывания правка и строка журнала коммитились бы по отдельности.
+    """
+    conn.execute("BEGIN")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
 class Database:
     def __init__(self, path: str, migrations_dir: Path = MIGRATIONS_DIR) -> None:
         self.path = path
